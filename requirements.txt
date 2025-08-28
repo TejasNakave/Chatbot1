@@ -1,0 +1,11 @@
+google-generativeai
+python-dotenv
+streamlit
+PyPDF2
+python-docx
+sentence-transformers
+scikit-learn
+numpy
+faiss-cpu
+razorpay
+stripe
