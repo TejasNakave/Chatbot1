@@ -162,23 +162,15 @@ def main():
     
     # Page configuration
     st.set_page_config(
-        page_title="Query Assistant",
+        page_title="Trade Assistant",
         page_icon="🤖",
-        layout="wide",
-        initial_sidebar_state="expanded"
+        layout="centered",
+        initial_sidebar_state="collapsed"
     )
     
     # Custom CSS and JS for better styling and image protection
     st.markdown('''
     <style>
-    .main-header {
-        background: linear-gradient(90deg, #4CAF50, #45a049);
-        padding: 2rem;
-        border-radius: 10px;
-        margin-bottom: 2rem;
-        text-align: center;
-        color: white;
-    }
     .metric-container {
         background: #f0f2f6;
         padding: 1rem;
@@ -310,14 +302,6 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    # Enhanced title and header
-    st.markdown("""
-    <div class="main-header">
-        <h1>🤖 Query Assistant</h1>
-        <p>Ask questions about your documents and get AI-powered answers!</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
     # Load documents initially and store in session state
     if 'documents' not in st.session_state or st.session_state.get('reload_documents', False):
         with st.spinner("Loading documents..."):
@@ -331,96 +315,13 @@ def main():
     
     documents = st.session_state.documents
     
-    # Sidebar for document management
-    with st.sidebar:
-        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        st.header("📚 Document Management")
-        
-        # Action buttons with improved layout
-        st.markdown("**Quick Actions:**")
-        col1, col2 = st.columns(2)
-        with col1:
-            refresh_clicked = st.button("🔄 Refresh", help="Reload documents from data/ folder", use_container_width=True)
-        with col2:
-            clear_clicked = st.button("🗑️ Clear Chat", help="Clear chat history", use_container_width=True)
-            
-        if refresh_clicked:
-            with st.spinner("🔄 Refreshing documents..."):
-                # Clear all cached data and force reload
-                st.session_state.documents = refresh_documents()
-                documents = st.session_state.documents
-                
-                # Force reinitialization of AI components with new documents
-                st.session_state.pop('initialized', None)
-                st.session_state.pop('retriever', None) 
-                st.session_state.pop('gemini', None)
-                
-                # Set reload flag and timestamp
-                st.session_state.reload_documents = True
-                st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
-                
-            st.success(f"✅ Documents refreshed! Found {len(documents)} documents.")
-            
-            # Show what was found
-            if documents:
-                st.info(f"📄 Loaded: {', '.join([doc['file_name'] for doc in documents])}")
-            
-            st.rerun()
-        
-        if clear_clicked:
-            st.session_state.chat_history = []
-            st.success("✅ Chat history cleared!")
-            st.rerun()
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Display loaded documents with improved styling
-        if documents:
-            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            st.success(f"✅ Loaded {len(documents)} documents")
-            
-            # Show last refresh time
-            if 'last_refresh' in st.session_state:
-                st.caption(f"Last refreshed: {st.session_state.last_refresh}")
-            
-            # Show document list with enhanced display
-            st.markdown("**📄 Document Library:**")
-            for i, doc in enumerate(documents, 1):
-                file_type_icons = {
-                    'pdf': '📄',
-                    'docx': '📝', 
-                    'txt': '📃'
-                }
-                icon = file_type_icons.get(doc['file_type'].lower().replace('.', ''), '📄')
-                
-                with st.expander(f"{icon} {doc['file_name']}", expanded=False):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Type", doc['file_type'].upper().replace('.', ''))
-                    with col2:
-                        st.metric("Size", f"{len(doc['content']):,} chars")
-                    
-                    # Enhanced preview
-                    st.markdown("**Preview:**")
-                    preview_text = doc['content'][:300] + "..." if len(doc['content']) > 300 else doc['content']
-                    st.text_area("Document Preview", preview_text, height=100, disabled=True, key=f"preview_{i}", label_visibility="collapsed")
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.error("❌ No documents found in 'data/' folder")
-            st.info("📁 Please add .pdf, .docx, or .txt files to the 'data/' folder and click refresh.")
-            return
-        
-        # Settings with enhanced styling
-        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        st.markdown("**⚙️ Settings**")
-        max_docs = st.slider("Max relevant documents", 1, 5, 3, help="Number of documents to use for context")
-        show_sources = st.checkbox("Show document sources", True, help="Display which documents were used for each answer")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
     # Initialize session state
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
+    
+    # Set default values for removed sidebar controls
+    max_docs = 3  # Default number of relevant documents
+    show_sources = False  # Default to not showing sources
     
     if 'initialized' not in st.session_state:
         with st.spinner("Initializing AI components..."):
