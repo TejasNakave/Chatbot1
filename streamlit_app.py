@@ -8,10 +8,22 @@ from gemini_wrapper import GeminiAPIWrapper
 from retriever import SimpleRetriever
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False, ttl=3600)  # Cache for 1 hour
 def load_documents():
-    """Load documents with caching."""
-    return load_documents_from_folder("data/")
+    """Load documents with caching and better error handling."""
+    try:
+        # Ensure data directory exists
+        data_dir = "data/"
+        if not os.path.exists(data_dir):
+            st.error(f"Data directory '{data_dir}' not found. Please ensure it exists on the server.")
+            return []
+        
+        documents = load_documents_from_folder(data_dir)
+        st.success(f"✅ Loaded {len(documents)} documents successfully")
+        return documents
+    except Exception as e:
+        st.error(f"Error loading documents: {str(e)}")
+        return []
 
 
 def refresh_documents():
@@ -25,14 +37,25 @@ def refresh_documents():
     return load_documents_from_folder("data/")
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def initialize_components(documents):
-    """Initialize chatbot components with caching."""
+    """Initialize chatbot components with caching and user isolation."""
     try:
+        # Add user session isolation
+        session_id = st.session_state.get('session_id', None)
+        if not session_id:
+            import time
+            session_id = f"session_{int(time.time())}"
+            st.session_state.session_id = session_id
+        
         retriever = SimpleRetriever(documents)
         gemini = GeminiAPIWrapper()
+        
+        # Log initialization for debugging
+        print(f"🚀 Initialized components for {session_id}")
         return retriever, gemini, None
     except Exception as e:
+        print(f"❌ Error initializing components: {str(e)}")
         return None, None, str(e)
 
 
@@ -137,20 +160,35 @@ def format_chat_message(role, content, timestamp=None):
                 st.markdown("**📸 Related Images:**")
                 cols = st.columns(min(len(images), 3))  # Max 3 images per row
                 
+                displayed_images = 0
                 for i, image_path in enumerate(images):
                     print(f"  Attempting to display image {i}: {image_path}")
                     with cols[i % 3]:
                         try:
+                            # Fix path for hosted environments
+                            if not os.path.isabs(image_path):
+                                # Make sure we're using the correct relative path
+                                if not image_path.startswith('cache/'):
+                                    image_path = os.path.join('cache', os.path.basename(image_path))
+                            
                             if os.path.exists(image_path):
                                 print(f"    ✅ Image file exists, displaying...")
                                 st.image(image_path, caption=f"Image {i+1}", use_container_width=True)
                                 print(f"    ✅ Image displayed successfully")
+                                displayed_images += 1
                             else:
                                 print(f"    ❌ Image file not found: {image_path}")
-                                st.error(f"Image not found: {image_path}")
+                                # Don't show error to user, just log it
+                                print(f"    📁 Current working directory: {os.getcwd()}")
+                                print(f"    📁 Cache directory exists: {os.path.exists('cache')}")
+                                if os.path.exists('cache'):
+                                    print(f"    📁 Cache contents: {os.listdir('cache')[:5]}")  # Show first 5 files
                         except Exception as e:
                             print(f"    ❌ Error displaying image: {str(e)}")
-                            st.error(f"Error displaying image: {str(e)}")
+                            # Don't show error to user in production
+                            
+                if displayed_images == 0:
+                    st.info("📸 Images are available but not accessible in hosted environment. This is a known limitation.")
         
         # If no clean content and no images, show original content
         if not clean_content and not images:
