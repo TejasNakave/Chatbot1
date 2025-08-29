@@ -124,6 +124,27 @@ class SimpleRetriever:
             return []
 
         try:
+            # TOPIC MISMATCH DETECTION - Check if query is about different domain
+            query_lower = query.lower()
+            
+            # Define trade/business terms that our documents are about
+            trade_terms = ['trade', 'export', 'import', 'customs', 'duty', 'tariff', 'svb', 'flowchart', 'process', 
+                          'business', 'commerce', 'shipping', 'freight', 'documentation', 'fta', 'drawback',
+                          'compliance', 'regulation', 'clearance', 'invoice', 'certificate']
+            
+            # Define terms that indicate completely different topics
+            unrelated_topics = ['coffee', 'cooking', 'recipe', 'food', 'kitchen', 'ingredient', 'baking',
+                              'personal', 'family', 'health', 'medical', 'sports', 'entertainment', 'music',
+                              'movie', 'game', 'hobby', 'travel', 'vacation', 'weather', 'animal', 'pet']
+            
+            # Check if query contains unrelated terms but no trade terms
+            has_unrelated = any(term in query_lower for term in unrelated_topics)
+            has_trade_terms = any(term in query_lower for term in trade_terms)
+            
+            if has_unrelated and not has_trade_terms:
+                print(f"🚫 TOPIC MISMATCH: Query about '{query}' is unrelated to trade documents")
+                return []  # Return empty list to trigger global search
+
             # PRIORITY KEYWORD MATCHING - Force specific documents for flowchart queries
             query_lower = query.lower()
             forced_results = []

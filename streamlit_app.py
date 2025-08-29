@@ -419,8 +419,11 @@ def main():
                     user_question, top_k=retrieval_count
                 )
                 
-                # Special handling for SVB queries - ensure SVB document is included
-                if 'svb' in user_question.lower() or 'process flow chart' in user_question.lower():
+                # Special handling for SVB queries - ensure SVB document is included (be more specific to avoid false matches)
+                if ('svb' in user_question.lower() and ('process' in user_question.lower() or 'flowchart' in user_question.lower() or 'flow chart' in user_question.lower())) or \
+                   ('svb process flow chart' in user_question.lower()) or \
+                   ('svb flowchart' in user_question.lower()) or \
+                   ('svb document' in user_question.lower()):
                     # Find SVB document in all documents
                     svb_doc = None
                     for doc in st.session_state.documents:

@@ -209,6 +209,7 @@ RESPONSE RULES:
 - If the documents contain the answer OR images that answer the question, use that information
 - Rewrite document content into natural, flowing text - do not copy raw bullet points or fragments
 - If the question asks for images/figures and you find them, include them with descriptive captions
+- TOPIC MISMATCH CHECK: If the question is about a completely different topic (e.g., coffee making, cooking, personal life) than the document content (which is about trade, customs, business processes), respond ONLY with: "GLOBAL_SEARCH_NEEDED"
 - If the documents do NOT contain the answer AND no relevant images found, respond ONLY with: "GLOBAL_SEARCH_NEEDED"
 - Do NOT explain that the document doesn't contain the information
 - Either provide the document-based answer (including any image references EXACTLY as found) OR respond with exactly "GLOBAL_SEARCH_NEEDED"
@@ -235,18 +236,33 @@ Answer:"""
                         doc_answer = response.text.strip()
                         
                         # Check if this is an image request and AI said GLOBAL_SEARCH_NEEDED
-                        # but we actually have images - force include them
+                        # but we actually have images - force include them ONLY if topic is relevant
                         if (doc_answer == "GLOBAL_SEARCH_NEEDED" and 
                             any(word in question.lower() for word in ['display', 'show', 'image', 'figure', 'flowchart', 'chart', 'diagram']) and
                             '[IMAGE_' in context):
                             
-                            print("🔧 FIXING: AI said GLOBAL_SEARCH_NEEDED but we have images for visual request")
-                            # Extract image references from context
-                            import re
-                            image_refs = re.findall(r'\[IMAGE_\d+: [^\]]+\]', context)
-                            if image_refs:
-                                doc_answer = f"Here are the requested images:\n\n" + "\n".join(image_refs)
-                                print(f"🔧 FORCED IMAGE RESPONSE: {len(image_refs)} images included")
+                            # Additional check: Don't force images for completely unrelated topics
+                            unrelated_topics = ['coffee', 'cooking', 'recipe', 'food', 'kitchen', 'ingredient', 'baking',
+                                              'personal', 'family', 'health', 'medical', 'sports', 'entertainment', 'music',
+                                              'movie', 'game', 'hobby', 'travel', 'vacation', 'weather', 'animal', 'pet']
+                            trade_terms = ['trade', 'export', 'import', 'customs', 'duty', 'tariff', 'svb', 'flowchart', 'process', 
+                                          'business', 'commerce', 'shipping', 'freight', 'documentation', 'fta', 'drawback',
+                                          'compliance', 'regulation', 'clearance', 'invoice', 'certificate']
+                            
+                            has_unrelated = any(term in question.lower() for term in unrelated_topics)
+                            has_trade_terms = any(term in question.lower() for term in trade_terms)
+                            
+                            # Only force images if topic is trade-related or no clear topic mismatch
+                            if not has_unrelated or has_trade_terms:
+                                print("🔧 FIXING: AI said GLOBAL_SEARCH_NEEDED but we have images for visual request")
+                                # Extract image references from context
+                                import re
+                                image_refs = re.findall(r'\[IMAGE_\d+: [^\]]+\]', context)
+                                if image_refs:
+                                    doc_answer = f"Here are the requested images:\n\n" + "\n".join(image_refs)
+                                    print(f"🔧 FORCED IMAGE RESPONSE: {len(image_refs)} images included")
+                            else:
+                                print(f"🚫 TOPIC MISMATCH: Not forcing images for unrelated query: {question}")
                         
                         # Debug: Print what AI responded
                         if "SVB" in question.upper() or "PROCESS" in question.upper() or "flowchart" in question.lower():
