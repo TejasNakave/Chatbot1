@@ -8,9 +8,30 @@ from gemini_wrapper import GeminiAPIWrapper
 from retriever import SimpleRetriever
 
 
+def get_data_dir_hash():
+    """Generate a hash based on files in data directory to detect changes."""
+    import hashlib
+    import os
+    
+    data_dir = "data/"
+    if not os.path.exists(data_dir):
+        return "no_data_dir"
+    
+    file_hash = hashlib.md5()
+    files = sorted([f for f in os.listdir(data_dir) if f.endswith(('.pdf', '.docx'))])
+    for filename in files:
+        filepath = os.path.join(data_dir, filename)
+        if os.path.isfile(filepath):
+            # Include filename and modification time in hash
+            file_hash.update(filename.encode('utf-8'))
+            file_hash.update(str(os.path.getmtime(filepath)).encode('utf-8'))
+    
+    return file_hash.hexdigest()[:12]
+
+
 @st.cache_data(show_spinner=False, ttl=3600)  # Cache for 1 hour
-def load_documents():
-    """Load documents with caching and better error handling."""
+def load_documents(data_dir_hash):
+    """Load documents with caching that refreshes when files change."""
     try:
         # Ensure data directory exists
         data_dir = "data/"
@@ -19,7 +40,7 @@ def load_documents():
             return []
         
         documents = load_documents_from_folder(data_dir)
-        st.success(f"✅ Loaded {len(documents)} documents successfully")
+        st.success(f"✅ Loaded {len(documents)} documents successfully (Hash: {data_dir_hash})")
         return documents
     except Exception as e:
         st.error(f"Error loading documents: {str(e)}")
@@ -33,13 +54,24 @@ def refresh_documents():
     st.cache_data.clear()
     st.cache_resource.clear()
     
-    # Force reload documents from folder
-    return load_documents_from_folder("data/")
+    # Also clear TF-IDF cache files to force rebuild
+    import glob
+    cache_files = glob.glob("cache/*.pkl")
+    for cache_file in cache_files:
+        try:
+            os.remove(cache_file)
+            print(f"🗑️ Removed cache file: {cache_file}")
+        except:
+            pass
+    
+    # Force reload documents from folder with new hash
+    data_dir_hash = get_data_dir_hash()
+    return load_documents_from_folder("data/"), data_dir_hash
 
 
 @st.cache_resource(show_spinner=False)
-def initialize_components(documents):
-    """Initialize chatbot components with caching and user isolation."""
+def initialize_components(documents, data_dir_hash):
+    """Initialize chatbot components with caching that refreshes when documents change."""
     try:
         # Add user session isolation
         session_id = st.session_state.get('session_id', None)
@@ -52,7 +84,7 @@ def initialize_components(documents):
         gemini = GeminiAPIWrapper()
         
         # Log initialization for debugging
-        print(f"🚀 Initialized components for {session_id}")
+        print(f"🚀 Initialized components for {session_id} (Data Hash: {data_dir_hash})")
         return retriever, gemini, None
     except Exception as e:
         print(f"❌ Error initializing components: {str(e)}")
@@ -343,7 +375,10 @@ def main():
     # Load documents initially and store in session state
     if 'documents' not in st.session_state or st.session_state.get('reload_documents', False):
         with st.spinner("Loading documents..."):
-            st.session_state.documents = load_documents()
+            # Generate hash to detect data directory changes
+            data_dir_hash = get_data_dir_hash()
+            st.session_state.documents = load_documents(data_dir_hash)
+            st.session_state.data_dir_hash = data_dir_hash
             st.session_state.reload_documents = False
             # Clear the initialized flag to force reinitialization of components
             if st.session_state.get('reload_documents', False):
@@ -352,6 +387,21 @@ def main():
                 st.session_state.pop('gemini', None)
     
     documents = st.session_state.documents
+    data_dir_hash = st.session_state.get('data_dir_hash', 'unknown')
+    
+    # Check if data directory has changed since last load
+    current_hash = get_data_dir_hash()
+    if current_hash != data_dir_hash:
+        st.info("🔄 New documents detected! Refreshing...")
+        # Force reload with new hash
+        st.session_state.documents = load_documents(current_hash)
+        st.session_state.data_dir_hash = current_hash
+        documents = st.session_state.documents
+        data_dir_hash = current_hash
+        # Clear initialization to force component refresh
+        st.session_state.pop('initialized', None)
+        st.session_state.pop('retriever', None)
+        st.session_state.pop('gemini', None)
     
     # Initialize session state
     if 'chat_history' not in st.session_state:
@@ -363,7 +413,7 @@ def main():
     
     if 'initialized' not in st.session_state:
         with st.spinner("Initializing AI components..."):
-            retriever, gemini, error = initialize_components(documents)
+            retriever, gemini, error = initialize_components(documents, data_dir_hash)
             if error:
                 st.error(f"❌ Error initializing AI: {error}")
                 st.info("Please check your .env file and ensure GEMINI_API_KEY is set correctly.")
@@ -419,11 +469,12 @@ def main():
                     user_question, top_k=retrieval_count
                 )
                 
-                # Special handling for SVB queries - ensure SVB document is included (be more specific to avoid false matches)
+                # Special handling for ONLY EXPLICIT SVB queries - be very specific to avoid false matches
                 if ('svb' in user_question.lower() and ('process' in user_question.lower() or 'flowchart' in user_question.lower() or 'flow chart' in user_question.lower())) or \
                    ('svb process flow chart' in user_question.lower()) or \
                    ('svb flowchart' in user_question.lower()) or \
-                   ('svb document' in user_question.lower()):
+                   ('svb document' in user_question.lower()) or \
+                   ('special valuation branch' in user_question.lower()):
                     # Find SVB document in all documents
                     svb_doc = None
                     for doc in st.session_state.documents:

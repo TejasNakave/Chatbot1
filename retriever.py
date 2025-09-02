@@ -127,8 +127,8 @@ class SimpleRetriever:
             # TOPIC MISMATCH DETECTION - Check if query is about different domain
             query_lower = query.lower()
             
-            # Define trade/business terms that our documents are about
-            trade_terms = ['trade', 'export', 'import', 'customs', 'duty', 'tariff', 'svb', 'flowchart', 'process', 
+            # Define trade/business terms that our documents are about (excluding generic words)
+            trade_terms = ['trade', 'export', 'import', 'customs', 'duty', 'tariff', 'svb', 
                           'business', 'commerce', 'shipping', 'freight', 'documentation', 'fta', 'drawback',
                           'compliance', 'regulation', 'clearance', 'invoice', 'certificate']
             
@@ -141,6 +141,73 @@ class SimpleRetriever:
             has_unrelated = any(term in query_lower for term in unrelated_topics)
             has_trade_terms = any(term in query_lower for term in trade_terms)
             
+            print(f"🔍 RETRIEVER CHECK: Query='{query}', has_unrelated={has_unrelated}, has_trade_terms={has_trade_terms}")
+            
+            # CONTEXTUAL REFERENCE DETECTION - Check if query refers to previous context
+            contextual_terms = ['above', 'previous', 'that', 'this', 'those', 'these', 'the image', 'the process', 'earlier']
+            has_contextual_reference = any(term in query_lower for term in contextual_terms)
+            
+            if has_contextual_reference:
+                print(f"🔗 CONTEXTUAL QUERY DETECTED: Query references previous context")
+                print(f"🔗 Returning empty list to use conversation context instead of search")
+                return []  # Let the AI use conversation context instead
+            
+            # Special handling for coffee queries - allow coffee content even from mixed documents
+            if 'coffee' in query_lower:
+                print(f"☕ COFFEE QUERY DETECTED: Looking for coffee-specific content")
+                coffee_docs = []
+                
+                for doc in self.documents:
+                    content_lower = doc.get('content', '').lower()
+                    file_name = doc.get('file_name', '')
+                    
+                    # Include documents that contain coffee content
+                    if 'coffee' in content_lower:
+                        doc_copy = dict(doc)
+                        # If it's an SVB document with coffee, mark it as coffee-focused
+                        if 'SVB' in file_name.upper():
+                            doc_copy['similarity_score'] = 0.90
+                            doc_copy['match_type'] = 'coffee_from_svb'
+                            print(f"☕ Found coffee content in SVB document: {doc.get('file_name', '')}")
+                        else:
+                            doc_copy['similarity_score'] = 0.95  # Higher for pure coffee docs
+                            doc_copy['match_type'] = 'coffee_specific'
+                            print(f"☕ Found pure coffee document: {doc.get('file_name', '')}")
+                        coffee_docs.append(doc_copy)
+                
+                if coffee_docs:
+                    print(f"☕ COFFEE RESULTS: Returning {len(coffee_docs)} documents with coffee content")
+                    return coffee_docs[:top_k]
+                else:
+                    print(f"☕ NO COFFEE CONTENT FOUND: No documents contain coffee information")
+                    return []
+            
+            # Special handling for SVB queries - focus on trade-related SVB content
+            if 'svb' in query_lower and not 'coffee' in query_lower:
+                print(f"🏛️ SVB QUERY DETECTED: Looking for SVB process content only")
+                svb_docs = []
+                
+                for doc in self.documents:
+                    content_lower = doc.get('content', '').lower()
+                    file_name = doc.get('file_name', '')
+                    
+                    # For SVB queries, focus on SVB documents but prefer trade-related content
+                    if 'SVB' in file_name.upper():
+                        doc_copy = dict(doc)
+                        # Check if content has both SVB and coffee - prefer SVB parts
+                        if 'svb' in content_lower and 'special valuation' in content_lower:
+                            doc_copy['similarity_score'] = 0.95  # High relevance for SVB match
+                            doc_copy['match_type'] = 'svb_specific'
+                        else:
+                            doc_copy['similarity_score'] = 0.85  # Lower for mixed content
+                            doc_copy['match_type'] = 'svb_mixed'
+                        svb_docs.append(doc_copy)
+                        print(f"🏛️ Found SVB document: {doc.get('file_name', '')}")
+                
+                if svb_docs:
+                    print(f"🏛️ SVB RESULTS: Returning {len(svb_docs)} SVB-specific documents")
+                    return svb_docs[:top_k]
+            
             if has_unrelated and not has_trade_terms:
                 print(f"🚫 TOPIC MISMATCH: Query about '{query}' is unrelated to trade documents")
                 return []  # Return empty list to trigger global search
@@ -151,8 +218,31 @@ class SimpleRetriever:
             
             print(f"🔍 Query: '{query}' -> Checking for specific flowcharts...")
             
+            # Bill of Entry (BOE) - highest priority for BOE keywords
+            if any(keyword in query_lower for keyword in ['bill of entry', 'boe', 'bill entry', 'entry bill']):
+                print("🎯 Detected BILL OF ENTRY (BOE) query")
+                for doc in self.documents:
+                    content_lower = doc.get('content', '').lower()
+                    file_name_lower = doc.get('file_name', '').lower()
+                    # Look for BOE content in any document
+                    if any(boe_term in content_lower for boe_term in ['bill of entry', 'boe', '1105807', 'customs edi']):
+                        doc_copy = dict(doc)
+                        doc_copy['similarity_score'] = 0.99
+                        doc_copy['match_type'] = 'forced_boe'
+                        forced_results.append(doc_copy)
+                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')} (contains BOE)")
+                        break
+                    # Also check filename for BOE-related terms
+                    elif any(boe_term in file_name_lower for boe_term in ['bill of entry', 'boe', 'import', 'customs']):
+                        doc_copy = dict(doc)
+                        doc_copy['similarity_score'] = 0.95
+                        doc_copy['match_type'] = 'forced_boe_filename'
+                        forced_results.append(doc_copy)
+                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')} (filename match)")
+                        break
+            
             # Duty Drawback Flowchart - highest priority for duty/drawback keywords
-            if any(keyword in query_lower for keyword in ['duty drawback', 'drawback flowchart', 'duty flow']):
+            elif any(keyword in query_lower for keyword in ['duty drawback', 'drawback flowchart', 'duty flow']):
                 print("🎯 Detected DUTY DRAWBACK query")
                 for doc in self.documents:
                     file_name_lower = doc.get('file_name', '').lower()
@@ -202,6 +292,27 @@ class SimpleRetriever:
                         forced_results.append(doc_copy)
                         print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')}")
                         break
+            
+            # Customs Tariff Flowchart - NEW!
+            elif any(keyword in query_lower for keyword in ['customs tariff', 'tariff flowchart', 'customs flowchart', 'hs code']):
+                print("🎯 Detected CUSTOMS TARIFF query")
+                for doc in self.documents:
+                    file_name_lower = doc.get('file_name', '').lower()
+                    # Look for the specific customs tariff PDF with flowcharts
+                    if 'customs tarriff & hs code' in file_name_lower and '.pdf' in file_name_lower:
+                        doc_copy = dict(doc)
+                        doc_copy['similarity_score'] = 0.99
+                        doc_copy['match_type'] = 'forced_customs_tariff'
+                        forced_results.append(doc_copy)
+                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')} (PDF with images)")
+                        break
+                    # Backup: also look for other customs tariff content
+                    elif 'customs tariff' in file_name_lower or 'customs tarriff' in file_name_lower:
+                        doc_copy = dict(doc)
+                        doc_copy['similarity_score'] = 0.95
+                        doc_copy['match_type'] = 'forced_customs_backup'
+                        forced_results.append(doc_copy)
+                        print(f"   ✅ BACKUP MATCH: {doc.get('file_name', '')}")
             
             # If we found forced results, return them immediately
             if forced_results:
@@ -278,9 +389,44 @@ class SimpleRetriever:
             List[Dict[str, str]]: Most relevant documents
         """
         try:
+            query_lower = query.lower()
+            
+            # PRIORITY: Prioritize specific flowchart documents for certificate/process queries
+            # This helps when comprehensive books compete with specific flowcharts
+            if any(term in query_lower for term in ['certificate of origin', 'certificate', 'origin', 'bill of entry', 'boe']):
+                print("📋 CERTIFICATE/BOE QUERY: Prioritizing flowchart documents over comprehensive books")
+                
+                # Find flowchart documents first
+                flowchart_docs = []
+                comprehensive_docs = []
+                
+                for doc in self.documents:
+                    filename = doc.get('file_name', '').lower()
+                    content = doc.get('content', '').lower()
+                    
+                    # Prioritize specific flowchart files and BOE-containing documents
+                    if any(flowchart_term in filename for flowchart_term in [
+                        'import process flowchart', 'export process flowchart', 
+                        'duty drawback flowchart', 'fta flowchart']) or \
+                       any(boe_term in content for boe_term in ['bill of entry', 'boe', '1105807']):
+                        flowchart_docs.append(doc)
+                        print(f"📋 PRIORITY: {doc.get('file_name', '')}")
+                    # Deprioritize comprehensive books
+                    elif any(book_term in filename for book_term in [
+                        'impex new book', 'comprehensive', 'manual', 'guide']):
+                        comprehensive_docs.append(doc)
+                        print(f"📚 DEPRIORITIZED: {doc.get('file_name', '')}")
+                    else:
+                        flowchart_docs.append(doc)  # Treat other docs as medium priority
+                
+                # Use flowchart documents first, then add comprehensive if needed
+                prioritized_documents = flowchart_docs + comprehensive_docs
+                print(f"📋 Using {len(flowchart_docs)} priority docs + {len(comprehensive_docs)} comprehensive docs")
+            else:
+                prioritized_documents = self.documents
+            
             # First, try exact keyword matching for better recall on specific terms
             exact_matches = []
-            query_lower = query.lower()
             
             # Extract potential date/keyword patterns from query
             import re
@@ -291,7 +437,7 @@ class SimpleRetriever:
             # Add the full query for exact matching
             search_terms = [query_lower] + date_patterns
             
-            for i, doc in enumerate(self.documents):
+            for i, doc in enumerate(prioritized_documents):
                 content_lower = doc.get('content', '').lower()
                 max_score = 0
                 match_found = False
@@ -309,14 +455,22 @@ class SimpleRetriever:
                     doc_copy['match_type'] = 'exact'
                     exact_matches.append(doc_copy)
             
+            # Create TF-IDF vectors for prioritized documents only
+            if hasattr(self, '_prioritized_vectors') and len(prioritized_documents) != len(self.documents):
+                # Need to rebuild vectors for prioritized subset
+                prioritized_contents = [doc.get('content', '') for doc in prioritized_documents]
+                prioritized_vectors = self.vectorizer.transform(prioritized_contents)
+            else:
+                prioritized_vectors = self.doc_vectors
+            
             # Vectorize the query for TF-IDF search
             query_vector = self.vectorizer.transform([query])
             
             # Calculate similarity scores
-            similarities = cosine_similarity(query_vector, self.doc_vectors).flatten()
+            similarities = cosine_similarity(query_vector, prioritized_vectors).flatten()
             
             # Get top-k most similar documents (limit to available documents)
-            num_docs = len(self.documents)
+            num_docs = len(prioritized_documents)
             actual_k = min(top_k, num_docs)
             top_indices = np.argsort(similarities)[::-1][:actual_k]
             
@@ -328,9 +482,10 @@ class SimpleRetriever:
                 
                 # Apply minimum similarity threshold (lowered for better recall)
                 if similarity_score > 0.05:
-                    doc = dict(self.documents[idx])  # Create a new dict
+                    doc = dict(prioritized_documents[idx])  # Create a new dict
                     doc['similarity_score'] = similarity_score
                     doc['match_type'] = 'tfidf'
+                    tfidf_matches.append(doc)
                     tfidf_matches.append(doc)
             
             # Combine and deduplicate results

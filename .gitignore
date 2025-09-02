@@ -6,6 +6,12 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Test and debug files (prevent accidental commits)
+test_*.py
+debug_*.py
+*test*.py
+cleanup_*.py
+
 # Temporary files
 ~$*
 *.tmp

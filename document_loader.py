@@ -1,437 +1,327 @@
+"""
+Enhanced Document Loader with OCR Support
+Handles PDF and DOCX files with image extraction and caching
+"""
+
 import os
-import glob
-import json
+import pickle
 import hashlib
-from typing import List, Dict
+import json
+from typing import List, Dict, Any
 import PyPDF2
+import fitz  # PyMuPDF
 from docx import Document
-
-# OCR imports with fallback
-try:
-    import fitz  # PyMuPDF
-    import pytesseract
-    from PIL import Image
-    import io
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
+import pytesseract
+from PIL import Image
+import io
+import re
 
 
-def get_file_hash(file_path: str) -> str:
-    """Get MD5 hash of file for caching purposes"""
-    hash_md5 = hashlib.md5()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
-
-
-def get_cache_path(file_path: str) -> str:
-    """Get cache file path for OCR results"""
-    cache_dir = "cache"
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
+class DocumentLoader:
+    """Enhanced document loader with OCR and caching capabilities"""
     
-    file_name = os.path.basename(file_path)
-    cache_name = f"{os.path.splitext(file_name)[0]}_ocr_cache.json"
-    return os.path.join(cache_dir, cache_name)
-
-
-def load_from_cache(file_path: str) -> str:
-    """Load OCR results from cache if available and file hasn't changed"""
-    cache_path = get_cache_path(file_path)
-    
-    if not os.path.exists(cache_path):
-        return None
-    
-    try:
-        with open(cache_path, 'r', encoding='utf-8') as f:
-            cache_data = json.load(f)
+    def __init__(self, cache_dir: str = "cache"):
+        self.cache_dir = cache_dir
+        self.ensure_cache_dir()
         
-        # Check if file hash matches (file hasn't changed)
-        current_hash = get_file_hash(file_path)
-        if cache_data.get('file_hash') == current_hash:
-            print(f"📁 Loading cached OCR results for {os.path.basename(file_path)}")
-            return cache_data.get('content')
-        else:
-            print(f"🔄 File changed, cache invalid for {os.path.basename(file_path)}")
-            return None
+        # Configure Tesseract path if needed (Windows)
+        if os.name == 'nt':  # Windows
+            try:
+                # Try common Tesseract installation paths
+                possible_paths = [
+                    r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+                    r'C:\Users\admin\AppData\Local\Programs\Tesseract-OCR\tesseract.exe',
+                    r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+                ]
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        pytesseract.pytesseract.tesseract_cmd = path
+                        break
+            except:
+                pass  # Tesseract might be in PATH
+    
+    def ensure_cache_dir(self):
+        """Create cache directory if it doesn't exist"""
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+    
+    def save_to_cache(self, filepath: str, data: Dict[str, Any], file_type: str):
+        """Save processed data to cache"""
+        try:
+            filename = os.path.basename(filepath)
+            base_name = os.path.splitext(filename)[0]
+            cache_path = os.path.join(self.cache_dir, f"{base_name}_{file_type}_processed.json")
             
-    except Exception as e:
-        print(f"⚠️  Cache read error: {str(e)}")
-        return None
-
-
-def save_to_cache(file_path: str, content: str):
-    """Save OCR results to cache"""
-    cache_path = get_cache_path(file_path)
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            print(f"💾 Cached {file_type} results for {filename}")
+        except Exception as e:
+            print(f"⚠️  Failed to cache {file_type} results: {e}")
     
-    try:
+    def load_from_cache(self, filepath: str, file_type: str) -> Dict[str, Any]:
+        """Load processed data from cache"""
+        try:
+            filename = os.path.basename(filepath)
+            base_name = os.path.splitext(filename)[0]
+            cache_path = os.path.join(self.cache_dir, f"{base_name}_{file_type}_processed.json")
+            
+            if os.path.exists(cache_path):
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                print(f"📁 Loading cached {file_type} results for {filename}")
+                
+                # Handle both old and new cache formats
+                if 'document_data' in data:
+                    # Old format
+                    return data['document_data']
+                else:
+                    # New format
+                    return data
+            return None
+        except Exception as e:
+            print(f"⚠️  Failed to load cached {file_type} results: {e}")
+            return None
+    
+    def extract_images_from_pdf(self, pdf_path: str) -> List[str]:
+        """Extract images from PDF and save to cache directory"""
+        image_paths = []
+        filename = os.path.splitext(os.path.basename(pdf_path))[0]
+        
+        try:
+            doc = fitz.open(pdf_path)
+            print(f"  🖼️  Extracting images from {len(doc)} pages...")
+            
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                image_list = page.get_images()
+                
+                for img_index, img in enumerate(image_list):
+                    xref = img[0]
+                    pix = fitz.Pixmap(doc, xref)
+                    
+                    # Convert to PNG if needed
+                    if pix.n - pix.alpha < 4:  # GRAY or RGB
+                        img_data = pix.tobytes("png")
+                        img_filename = f"{filename}_page{page_num + 1}_img{img_index}.png"
+                        img_path = os.path.join(self.cache_dir, img_filename)
+                        
+                        with open(img_path, "wb") as img_file:
+                            img_file.write(img_data)
+                        
+                        image_paths.append(img_path)
+                        print(f"    ✅ Extracted: {img_filename}")
+                    
+                    pix = None  # Free memory
+            
+            doc.close()
+            print(f"  ✅ Total images extracted: {len(image_paths)}")
+            
+        except Exception as e:
+            print(f"  ⚠️  Error extracting images: {e}")
+        
+        return image_paths
+    
+    def load_pdf_with_ocr(self, pdf_path: str) -> str:
+        """Load PDF with OCR fallback and image extraction"""
+        filename = os.path.basename(pdf_path)
+        
+        # Check cache first
+        cached_data = self.load_from_cache(pdf_path, "pdf")
+        if cached_data:
+            return cached_data.get("content", "")
+        
+        print(f"Processing: {filename}")
+        content = ""
+        
+        try:
+            # Try regular text extraction first
+            with open(pdf_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                print(f"PDF has {len(pdf_reader.pages)} pages")
+                
+                # Try to extract text from each page
+                text_found = False
+                for i, page in enumerate(pdf_reader.pages):
+                    page_text = page.extract_text()
+                    if page_text.strip():
+                        print(f"  Page {i+1}: Extracted {len(page_text)} characters")
+                        content += page_text + "\n"
+                        text_found = True
+                    else:
+                        print(f"  Page {i+1}: No text found")
+                
+                if text_found:
+                    print(f"  ✅ Text-based PDF detected, extracting all pages...")
+                    print(f"  ✅ Regular extraction: {len(content)} characters")
+                else:
+                    print(f"  ⚠️  No extractable text found, trying OCR...")
+                    content = ""  # Reset content for OCR
+        
+        except Exception as e:
+            print(f"  ⚠️  Error reading PDF: {e}")
+        
+        # Extract images (always do this for potential display)
+        image_paths = self.extract_images_from_pdf(pdf_path)
+        
+        # If no text found, use OCR
+        if not content.strip():
+            try:
+                doc = fitz.open(pdf_path)
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap()
+                    img_data = pix.tobytes("png")
+                    img = Image.open(io.BytesIO(img_data))
+                    
+                    # Perform OCR
+                    page_text = pytesseract.image_to_string(img, config='--psm 6')
+                    if page_text.strip():
+                        content += f"Page {page_num + 1}:\n{page_text}\n\n"
+                
+                doc.close()
+                print(f"  ✅ OCR extraction: {len(content)} characters")
+                
+            except Exception as e:
+                print(f"  ⚠️  OCR failed: {e}")
+        
+        # Add image references to content
+        for i, img_path in enumerate(image_paths):
+            rel_path = os.path.relpath(img_path, start=os.getcwd())
+            content += f"\n[IMAGE_{i}: {rel_path}]\n"
+        
+        # Cache the results
         cache_data = {
-            'file_hash': get_file_hash(file_path),
-            'content': content,
-            'cached_at': str(os.path.getmtime(file_path))
+            "content": content,
+            "image_paths": image_paths,
+            "processing_date": str(os.path.getmtime(pdf_path))
         }
+        self.save_to_cache(pdf_path, cache_data, "pdf")
         
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        return content
+    
+    def load_docx(self, docx_path: str) -> str:
+        """Load DOCX file with image extraction"""
+        filename = os.path.basename(docx_path)
         
-        print(f"💾 Saved OCR results to cache for {os.path.basename(file_path)}")
+        # Check cache first
+        cached_data = self.load_from_cache(docx_path, "docx")
+        if cached_data:
+            return cached_data.get("content", "")
         
-    except Exception as e:
-        print(f"⚠️  Cache save error: {str(e)}")
+        print(f"Processing: {filename}")
+        content = ""
+        image_paths = []
+        
+        try:
+            doc = Document(docx_path)
+            
+            # Extract text
+            for paragraph in doc.paragraphs:
+                content += paragraph.text + "\n"
+            
+            # Extract images from DOCX
+            for rel in doc.part.rels.values():
+                if "image" in rel.target_ref:
+                    try:
+                        img_data = rel.target_part.blob
+                        img_filename = f"{os.path.splitext(filename)[0]}_{len(image_paths)}.png"
+                        img_path = os.path.join(self.cache_dir, img_filename)
+                        
+                        # Save image
+                        with open(img_path, "wb") as img_file:
+                            img_file.write(img_data)
+                        
+                        image_paths.append(img_path)
+                        
+                        # Add image reference to content
+                        rel_path = os.path.relpath(img_path, start=os.getcwd())
+                        content += f"\n[IMAGE_{len(image_paths)-1}: {rel_path}]\n"
+                        
+                    except Exception as e:
+                        print(f"  ⚠️  Error extracting image: {e}")
+            
+            print(f"Loaded: {filename} ({len(content)} characters)")
+            
+            # Cache the results
+            cache_data = {
+                "content": content,
+                "image_paths": image_paths,
+                "processing_date": str(os.path.getmtime(docx_path))
+            }
+            self.save_to_cache(docx_path, cache_data, "docx")
+            
+        except Exception as e:
+            print(f"  ⚠️  Error loading DOCX: {e}")
+        
+        return content
+    
+    def load_document(self, filepath: str) -> str:
+        """Load a single document based on its type"""
+        ext = os.path.splitext(filepath)[1].lower()
+        
+        if ext == '.pdf':
+            return self.load_pdf_with_ocr(filepath)
+        elif ext == '.docx':
+            return self.load_docx(filepath)
+        else:
+            print(f"  ⚠️  Unsupported file type: {ext}")
+            return ""
 
 
-def load_documents_from_folder(folder_path: str = "data/") -> List[Dict[str, str]]:
+def load_documents_from_folder(folder_path: str) -> List[Dict[str, Any]]:
     """
-    Load all .pdf, .docx, and .txt files from the specified folder.
-    
-    Args:
-        folder_path (str): Path to the folder containing documents
-        
-    Returns:
-        List[Dict[str, str]]: List of dictionaries containing file content and metadata
+    Load all documents from a folder and return a list of document objects
     """
-    documents = []
-    
-    # Ensure folder exists
-    if not os.path.exists(folder_path):
-        print(f"Warning: Folder '{folder_path}' does not exist.")
-        return documents
-    
     print(f"Loading documents from: {os.path.abspath(folder_path)}")
     
-    # Get all supported file types
-    file_patterns = [
-        os.path.join(folder_path, "*.pdf"),
-        os.path.join(folder_path, "*.docx"),
-        os.path.join(folder_path, "*.txt")
-    ]
+    if not os.path.exists(folder_path):
+        print(f"❌ Folder not found: {folder_path}")
+        return []
     
-    all_files = []
-    for pattern in file_patterns:
-        files = glob.glob(pattern)
-        all_files.extend(files)
+    loader = DocumentLoader()
+    documents = []
     
-    print(f"Found {len(all_files)} files: {[os.path.basename(f) for f in all_files]}")
+    # Get all supported files
+    supported_extensions = ['.pdf', '.docx']
+    files = []
     
-    for file_path in all_files:
+    for filename in os.listdir(folder_path):
+        filepath = os.path.join(folder_path, filename)
+        if os.path.isfile(filepath):
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in supported_extensions:
+                files.append(filepath)
+    
+    if not files:
+        print("❌ No supported documents found (PDF, DOCX)")
+        return []
+    
+    print(f"Found {len(files)} files: {[os.path.basename(f) for f in files]}")
+    
+    # Process each file
+    for filepath in files:
         try:
-            content = ""
-            file_name = os.path.basename(file_path)
-            file_ext = os.path.splitext(file_name)[1].lower()
+            content = loader.load_document(filepath)
             
-            print(f"Processing: {file_name}")
-            
-            if file_ext == ".pdf":
-                content = load_pdf(file_path)
-            elif file_ext == ".docx":
-                content = load_docx(file_path)
-            elif file_ext == ".txt":
-                content = load_txt(file_path)
-            
-            if content.strip():  # Only add if content is not empty
+            if content.strip():
                 documents.append({
-                    "file_name": file_name,
-                    "file_path": file_path,
-                    "content": content,
-                    "file_type": file_ext
+                    'file_name': os.path.basename(filepath),  # Changed from 'filename' to 'file_name'
+                    'filepath': filepath,
+                    'content': content,
+                    'type': os.path.splitext(filepath)[1].lower()
                 })
-                print(f"Loaded: {file_name} ({len(content)} characters)")
             else:
-                print(f"Warning: No content found in {file_name}")
-                # Still add the document with a note that it couldn't be processed
-                documents.append({
-                    "file_name": file_name,
-                    "file_path": file_path,
-                    "content": f"This file could not be processed. File: {file_name}\nReason: No extractable text content found.",
-                    "file_type": file_ext
-                })
-                print(f"Added with placeholder content: {file_name}")
-                
+                print(f"⚠️  {os.path.basename(filepath)}: No content extracted")
         except Exception as e:
-            print(f"Error loading {file_path}: {str(e)}")
+            print(f"❌ Failed to load {os.path.basename(filepath)}: {e}")
     
     print(f"Successfully loaded {len(documents)} documents.")
     return documents
 
 
-def extract_text_with_ocr(pdf_path: str, max_pages: int = 215) -> str:
-    """Extract text from scanned PDF using OCR with caching"""
-    if not OCR_AVAILABLE:
-        return f"OCR not available for {os.path.basename(pdf_path)}"
-    
-    # Check cache first
-    cached_content = load_from_cache(pdf_path)
-    if cached_content:
-        return cached_content
-    
-    # Set up Tesseract path
-    possible_paths = [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            pytesseract.pytesseract.tesseract_cmd = path
-            break
-    
-    try:
-        print(f"🔍 Running OCR on {os.path.basename(pdf_path)} ({max_pages} pages)...")
-        
-        # Open PDF with PyMuPDF
-        doc = fitz.open(pdf_path)
-        extracted_text = ""
-        successful_pages = 0
-        
-        total_pages = min(len(doc), max_pages)
-        print(f"📄 Processing {total_pages} pages with OCR...")
-        
-        for page_num in range(total_pages):
-            try:
-                if page_num % 10 == 0:  # Progress update every 10 pages
-                    print(f"   � Progress: {page_num + 1}/{total_pages} pages...")
-                
-                # Get page and convert to image
-                page = doc[page_num]
-                mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better OCR
-                pix = page.get_pixmap(matrix=mat)
-                
-                # Convert to PIL Image
-                img_data = pix.tobytes("png")
-                img = Image.open(io.BytesIO(img_data))
-                
-                # Run OCR
-                text = pytesseract.image_to_string(img, lang='eng')
-                
-                if text.strip():
-                    extracted_text += f"\n=== Page {page_num + 1} ===\n{text.strip()}\n"
-                    successful_pages += 1
-                    
-            except Exception as e:
-                print(f"   ❌ Page {page_num + 1}: Error - {str(e)}")
-        
-        doc.close()
-        
-        if extracted_text.strip():
-            full_text = f"""OCR-Extracted Text from {os.path.basename(pdf_path)}
-Source: Scanned PDF processed with OCR
-Pages processed: {successful_pages}/{total_pages} (of {len(fitz.open(pdf_path))} total)
-
-{extracted_text}
-
-Note: Full document processed and cached for faster future access."""
-            
-            print(f"✅ OCR completed: {len(full_text)} characters from {successful_pages} pages")
-            
-            # Save to cache for faster future loading
-            save_to_cache(pdf_path, full_text)
-            
-            return full_text
-        else:
-            return f"OCR found no readable text in {os.path.basename(pdf_path)}"
-            
-    except Exception as e:
-        print(f"❌ OCR failed: {str(e)}")
-        return f"OCR processing failed for {os.path.basename(pdf_path)}: {str(e)}"
-
-
-def load_pdf(file_path: str) -> str:
-    """Extract text from PDF file with improved handling, OCR fallback, and image extraction."""
-    text = ""
-    images = []
-    file_name = os.path.basename(file_path)
-    
-    try:
-        with open(file_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
-            
-            print(f"PDF has {len(pdf_reader.pages)} pages")
-            
-            # Check first few pages for regular text
-            pages_with_text = 0
-            for page_num in range(min(5, len(pdf_reader.pages))):
-                try:
-                    page = pdf_reader.pages[page_num]
-                    page_text = page.extract_text()
-                    if page_text.strip():
-                        text += page_text + "\n"
-                        pages_with_text += 1
-                        print(f"  Page {page_num + 1}: Extracted {len(page_text)} characters")
-                    else:
-                        print(f"  Page {page_num + 1}: No text found")
-                except Exception as e:
-                    print(f"  Page {page_num + 1}: Error extracting text - {str(e)}")
-            
-            # If we found text, continue with regular extraction
-            if pages_with_text > 0:
-                print(f"  ✅ Text-based PDF detected, extracting all pages...")
-                for page in pdf_reader.pages[5:]:
-                    try:
-                        text += page.extract_text() + "\n"
-                    except:
-                        pass
-                print(f"  ✅ Regular extraction: {len(text)} characters")
-                
-                # Extract images using PyMuPDF (even for text-based PDFs)
-                images = extract_images_from_pdf(file_path)
-            else:
-                # No regular text found, try OCR
-                print(f"  ⚠️  No extractable text found, trying OCR...")
-                text = extract_text_with_ocr(file_path, max_pages=215)
-                
-                # Extract images for OCR-based PDFs too
-                images = extract_images_from_pdf(file_path)
-        
-        # Add image references to text if images were found
-        if images:
-            text += f"\n[IMAGES_AVAILABLE: {len(images)} images extracted]\n"
-            for i, img in enumerate(images):
-                text += f"[IMAGE_{i}: {img['path']}]\n"
-                
-    except Exception as e:
-        raise Exception(f"Error reading PDF: {str(e)}")
-    return text
-
-
-def extract_images_from_pdf(file_path: str) -> list:
-    """Extract images from PDF using PyMuPDF."""
-    images = []
-    
-    if not OCR_AVAILABLE:  # PyMuPDF is imported with OCR
-        return images
-    
-    try:
-        doc = fitz.open(file_path)
-        file_base = os.path.splitext(os.path.basename(file_path))[0]
-        
-        # Create cache directory
-        cache_dir = "cache"
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-        
-        print(f"  🖼️  Extracting images from {len(doc)} pages...")
-        
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            image_list = page.get_images()
-            
-            for img_index, img in enumerate(image_list):
-                try:
-                    # Get image data
-                    xref = img[0]
-                    pix = fitz.Pixmap(doc, xref)
-                    
-                    # Convert CMYK to RGB if needed
-                    if pix.n - pix.alpha < 4:  # GRAY or RGB
-                        img_data = pix.tobytes("png")
-                    else:  # CMYK
-                        pix1 = fitz.Pixmap(fitz.csRGB, pix)
-                        img_data = pix1.tobytes("png")
-                        pix1 = None
-                    
-                    # Save image
-                    image_name = f"{file_base}_page{page_num+1}_img{img_index}.png"
-                    image_path = os.path.join(cache_dir, image_name)
-                    
-                    # Use forward slashes for cross-platform compatibility
-                    relative_path = image_path.replace('\\', '/')
-                    
-                    with open(image_path, 'wb') as img_file:
-                        img_file.write(img_data)
-                    
-                    images.append({
-                        'path': relative_path,
-                        'name': image_name,
-                        'page': page_num + 1
-                    })
-                    
-                    print(f"    ✅ Extracted: {image_name}")
-                    
-                    pix = None
-                    
-                except Exception as e:
-                    print(f"    ❌ Error extracting image {img_index} from page {page_num + 1}: {e}")
-        
-        doc.close()
-        print(f"  ✅ Total images extracted: {len(images)}")
-        
-    except Exception as e:
-        print(f"  ❌ Error extracting images from PDF: {e}")
-    
-    return images
-
-
-def load_docx(file_path: str) -> str:
-    """Extract text from DOCX file with image extraction support."""
-    try:
-        doc = Document(file_path)
-        text = ""
-        images = []
-        
-        # Extract images from the document
-        for rel in doc.part.rels.values():
-            if "image" in rel.target_ref:
-                try:
-                    image_data = rel.target_part.blob
-                    image_name = f"{os.path.splitext(os.path.basename(file_path))[0]}_{len(images)}.png"
-                    
-                    # Save image to cache directory
-                    cache_dir = "cache"
-                    if not os.path.exists(cache_dir):
-                        os.makedirs(cache_dir)
-                    
-                    image_path = os.path.join(cache_dir, image_name)
-                    
-                    with open(image_path, 'wb') as img_file:
-                        img_file.write(image_data)
-                    
-                    # Use forward slashes for cross-platform compatibility in Streamlit
-                    relative_path = image_path.replace('\\', '/')
-                    images.append({
-                        'path': relative_path,  # Use forward slashes like "cache/image.png"
-                        'name': image_name
-                    })
-                except Exception as e:
-                    print(f"Warning: Could not extract image: {str(e)}")
-        
-        # Extract text from paragraphs
-        for paragraph in doc.paragraphs:
-            text += paragraph.text + "\n"
-        
-        # If images were found, add reference to them in the text
-        if images:
-            text += f"\n[IMAGES_AVAILABLE: {len(images)} images extracted]\n"
-            for i, img in enumerate(images):
-                text += f"[IMAGE_{i}: {img['path']}]\n"
-                
-    except Exception as e:
-        raise Exception(f"Error reading DOCX: {str(e)}")
-    return text
-
-
-def load_txt(file_path: str) -> str:
-    """Load text from TXT file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as file:
-            text = file.read()
-    except UnicodeDecodeError:
-        # Try with different encoding if UTF-8 fails
-        try:
-            with open(file_path, 'r', encoding='latin-1') as file:
-                text = file.read()
-        except Exception as e:
-            raise Exception(f"Error reading TXT file with multiple encodings: {str(e)}")
-    except Exception as e:
-        raise Exception(f"Error reading TXT: {str(e)}")
-    return text
-
-
 if __name__ == "__main__":
-    # Test the document loader
-    docs = load_documents_from_folder()
-    for doc in docs:
-        print(f"\nFile: {doc['file_name']}")
-        print(f"Type: {doc['file_type']}")
-        print(f"Content preview: {doc['content'][:200]}...")
+    """Test the document loader"""
+    documents = load_documents_from_folder("data/")
+    for doc in documents:
+        print(f"📄 {doc['file_name']}: {len(doc['content'])} characters")
