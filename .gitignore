@@ -1,3 +1,7 @@
+# Environment variables
+.env
+*.env
+
 # Cache directory (but keep the folder structure)
 cache/*.pkl
 cache/*.json

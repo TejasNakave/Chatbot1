@@ -2,9 +2,83 @@ import numpy as np
 import os
 import pickle
 import hashlib
+import re
 from typing import List, Dict, Tuple
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+
+def assess_ocr_quality(text: str) -> Dict[str, float]:
+    """
+    Assess the quality of OCR-extracted text.
+    
+    Returns:
+        Dict with quality scores:
+        - corruption_ratio: Ratio of corrupted words (0=clean, 1=fully corrupted)
+        - readability_score: Overall readability (0=unreadable, 1=perfect)
+        - confidence: Confidence in the assessment (0=low, 1=high)
+    """
+    if not text or len(text.strip()) < 10:
+        return {"corruption_ratio": 0.0, "readability_score": 0.0, "confidence": 0.0}
+    
+    words = text.split()
+    total_words = len(words)
+    
+    if total_words == 0:
+        return {"corruption_ratio": 0.0, "readability_score": 0.0, "confidence": 0.0}
+    
+    corrupted_words = 0
+    
+    # Patterns indicating OCR corruption
+    corruption_patterns = [
+        r'^[a-z]{1,2}$',  # Single/double lowercase letters alone
+        r'[0-9][a-z]+[0-9]',  # Numbers mixed with letters randomly
+        r'^[A-Z]{3,}$',  # ALL CAPS short words (often OCR artifacts)
+        r'[a-zA-Z]{1}[0-9]+[a-zA-Z]{1,2}',  # Letter-number-letter patterns
+        r'^[^a-zA-Z0-9\s]{2,}$',  # Multiple special characters
+        r'[a-zA-Z]{1,2}[0-9]{1,2}[a-zA-Z]{1,2}',  # Mixed letter-number patterns
+    ]
+    
+    # Common OCR corruption indicators
+    corruption_indicators = [
+        'entccaate', 'aytion', 'PrctomaBcally', 'alectaredt', 'omplmre',
+        'wragiak', 'aperoncn', 'tnenlte', 'Brug', 'docamat', 'poregs'
+    ]
+    
+    for word in words:
+        # Check for obvious corruption patterns
+        is_corrupted = False
+        
+        # Pattern-based detection
+        for pattern in corruption_patterns:
+            if re.match(pattern, word):
+                is_corrupted = True
+                break
+        
+        # Known corruption indicators
+        if word.lower() in [ind.lower() for ind in corruption_indicators]:
+            is_corrupted = True
+        
+        # Excessive special characters
+        if len(re.findall(r'[^a-zA-Z0-9\s]', word)) > len(word) * 0.3:
+            is_corrupted = True
+        
+        # Very short words with mixed case
+        if len(word) <= 3 and word.lower() != word and word.upper() != word:
+            is_corrupted = True
+        
+        if is_corrupted:
+            corrupted_words += 1
+    
+    corruption_ratio = corrupted_words / total_words
+    readability_score = max(0.0, 1.0 - corruption_ratio * 2)  # Penalize corruption heavily
+    confidence = min(1.0, total_words / 50)  # Higher confidence with more text
+    
+    return {
+        "corruption_ratio": corruption_ratio,
+        "readability_score": readability_score,
+        "confidence": confidence
+    }
 
 
 class SimpleRetriever:
@@ -212,111 +286,218 @@ class SimpleRetriever:
                 print(f"🚫 TOPIC MISMATCH: Query about '{query}' is unrelated to trade documents")
                 return []  # Return empty list to trigger global search
 
-            # PRIORITY KEYWORD MATCHING - Force specific documents for flowchart queries
+            # UNIVERSAL SMART DOCUMENT PRIORITIZATION SYSTEM
+            # This system handles ALL topics systematically with OCR quality awareness
             query_lower = query.lower()
             forced_results = []
             
-            print(f"🔍 Query: '{query}' -> Checking for specific flowcharts...")
+            print(f"🔍 Query: '{query}' -> Universal smart document selection...")
             
-            # Bill of Entry (BOE) - highest priority for BOE keywords
+            # Detect query type and intent
+            is_definition_query = any(def_word in query_lower for def_word in [
+                'what is', 'definition', 'explain', 'meaning', 'define', 'about', 'describe'
+            ])
+            
+            is_flowchart_query = any(flow_word in query_lower for flow_word in [
+                'flowchart', 'flow chart', 'process', 'steps', 'procedure', 'show', 'display', 'diagram'
+            ])
+            
+            # TOPIC-SPECIFIC SMART ROUTING
+            
+            # 1. BILL OF ENTRY (BOE) - Smart routing
             if any(keyword in query_lower for keyword in ['bill of entry', 'boe', 'bill entry', 'entry bill']):
                 print("🎯 Detected BILL OF ENTRY (BOE) query")
-                for doc in self.documents:
-                    content_lower = doc.get('content', '').lower()
-                    file_name_lower = doc.get('file_name', '').lower()
-                    # Look for BOE content in any document
-                    if any(boe_term in content_lower for boe_term in ['bill of entry', 'boe', '1105807', 'customs edi']):
-                        doc_copy = dict(doc)
-                        doc_copy['similarity_score'] = 0.99
-                        doc_copy['match_type'] = 'forced_boe'
-                        forced_results.append(doc_copy)
-                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')} (contains BOE)")
-                        break
-                    # Also check filename for BOE-related terms
-                    elif any(boe_term in file_name_lower for boe_term in ['bill of entry', 'boe', 'import', 'customs']):
-                        doc_copy = dict(doc)
-                        doc_copy['similarity_score'] = 0.95
-                        doc_copy['match_type'] = 'forced_boe_filename'
-                        forced_results.append(doc_copy)
-                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')} (filename match)")
-                        break
+                if is_definition_query:
+                    print("   📚 Definition query - prioritizing clean DOCX content")
+                    # Look for clean text content first
+                    for doc in self.documents:
+                        content_lower = doc.get('content', '').lower()
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if ('.docx' in file_name_lower and any(boe_term in content_lower for boe_term in ['bill of entry', 'boe'])):
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'clean_text_boe'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ CLEAN CONTENT: {doc.get('file_name', '')} (DOCX)")
+                            break
+                elif is_flowchart_query:
+                    print("   🔄 Flowchart query - prioritizing visual flowchart")
+                    # Look for import process flowchart
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'import process flowchart' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'flowchart_boe'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ FLOWCHART: {doc.get('file_name', '')} (Visual)")
+                            break
             
-            # Duty Drawback Flowchart - highest priority for duty/drawback keywords
-            elif any(keyword in query_lower for keyword in ['duty drawback', 'drawback flowchart', 'duty flow']):
+            # 2. DUTY DRAWBACK - Smart prioritization
+            elif any(keyword in query_lower for keyword in ['duty drawback', 'drawback']):
                 print("🎯 Detected DUTY DRAWBACK query")
-                for doc in self.documents:
-                    file_name_lower = doc.get('file_name', '').lower()
-                    if 'duty drawback flowchart' in file_name_lower:
-                        doc_copy = dict(doc)
-                        doc_copy['similarity_score'] = 0.99
-                        doc_copy['match_type'] = 'forced_duty_drawback'
-                        forced_results.append(doc_copy)
-                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')}")
-                        break
+                if is_definition_query and not is_flowchart_query:
+                    print("   📚 Definition query - prioritizing DOCX content")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'duty drawback content' in file_name_lower and '.docx' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'clean_text_duty'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ CLEAN CONTENT: {doc.get('file_name', '')} (DOCX)")
+                            break
+                elif is_flowchart_query:
+                    print("   🔄 Flowchart query - prioritizing PDF flowchart")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'duty drawback flowchart' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'flowchart_duty'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ FLOWCHART: {doc.get('file_name', '')} (Visual)")
+                            break
             
-            # Export Process Flowchart
-            elif any(keyword in query_lower for keyword in ['export process', 'export flowchart', 'export flow']):
+            # 3. EXPORT PROCESS - Smart prioritization
+            elif any(keyword in query_lower for keyword in ['export process', 'export', 'export procedure']):
                 print("🎯 Detected EXPORT PROCESS query")
-                for doc in self.documents:
-                    file_name_lower = doc.get('file_name', '').lower()
-                    if 'export process flowchart' in file_name_lower:
-                        doc_copy = dict(doc)
-                        doc_copy['similarity_score'] = 0.99
-                        doc_copy['match_type'] = 'forced_export'
-                        forced_results.append(doc_copy)
-                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')}")
-                        break
+                if is_definition_query and not is_flowchart_query:
+                    print("   📚 Definition query - prioritizing DOCX content")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'export process contents' in file_name_lower and '.docx' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'clean_text_export'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ CLEAN CONTENT: {doc.get('file_name', '')} (DOCX)")
+                            break
+                elif is_flowchart_query:
+                    print("   🔄 Flowchart query - prioritizing PDF flowchart")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'export process flowchart' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'flowchart_export'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ FLOWCHART: {doc.get('file_name', '')} (Visual)")
+                            break
             
-            # Import Process Flowchart
-            elif any(keyword in query_lower for keyword in ['import process', 'import flowchart', 'import flow']):
+            # 4. IMPORT PROCESS - Smart prioritization
+            elif any(keyword in query_lower for keyword in ['import process', 'import', 'import procedure']):
                 print("🎯 Detected IMPORT PROCESS query")
-                for doc in self.documents:
-                    file_name_lower = doc.get('file_name', '').lower()
-                    if 'import process flowchart' in file_name_lower:
-                        doc_copy = dict(doc)
-                        doc_copy['similarity_score'] = 0.99
-                        doc_copy['match_type'] = 'forced_import'
-                        forced_results.append(doc_copy)
-                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')}")
-                        break
+                if is_definition_query and not is_flowchart_query:
+                    print("   📚 Definition query - prioritizing DOCX content")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'import' in file_name_lower and 'process contents' in file_name_lower and '.docx' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'clean_text_import'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ CLEAN CONTENT: {doc.get('file_name', '')} (DOCX)")
+                            break
+                elif is_flowchart_query:
+                    print("   🔄 Flowchart query - prioritizing PDF flowchart")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'import process flowchart' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'flowchart_import'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ FLOWCHART: {doc.get('file_name', '')} (Visual)")
+                            break
             
-            # FTA Flowchart
-            elif any(keyword in query_lower for keyword in ['fta', 'free trade', 'fta flowchart']):
-                print("🎯 Detected FTA query")
-                for doc in self.documents:
-                    file_name_lower = doc.get('file_name', '').lower()
-                    if 'fta flowchart' in file_name_lower:
-                        doc_copy = dict(doc)
-                        doc_copy['similarity_score'] = 0.99
-                        doc_copy['match_type'] = 'forced_fta'
-                        forced_results.append(doc_copy)
-                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')}")
-                        break
+            # 5. FREE TRADE AGREEMENT (FTA) - Smart prioritization
+            elif any(keyword in query_lower for keyword in ['fta', 'free trade', 'free trade agreement']):
+                print("🎯 Detected FREE TRADE AGREEMENT query")
+                if is_definition_query and not is_flowchart_query:
+                    print("   📚 Definition query - prioritizing DOCX content")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'free trade agreements content' in file_name_lower and '.docx' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'clean_text_fta'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ CLEAN CONTENT: {doc.get('file_name', '')} (DOCX)")
+                            break
+                elif is_flowchart_query:
+                    print("   🔄 Flowchart query - prioritizing PDF flowchart")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'fta flowchart' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'flowchart_fta'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ FLOWCHART: {doc.get('file_name', '')} (Visual)")
+                            break
             
-            # Customs Tariff Flowchart - NEW!
-            elif any(keyword in query_lower for keyword in ['customs tariff', 'tariff flowchart', 'customs flowchart', 'hs code']):
+            # 6. CUSTOMS TARIFF - Smart prioritization
+            elif any(keyword in query_lower for keyword in ['customs tariff', 'tariff', 'hs code', 'customs code']):
                 print("🎯 Detected CUSTOMS TARIFF query")
+                if is_definition_query and not is_flowchart_query:
+                    print("   📚 Definition query - prioritizing DOCX content")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'customs tariff content' in file_name_lower and '.docx' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'clean_text_tariff'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ CLEAN CONTENT: {doc.get('file_name', '')} (DOCX)")
+                            break
+                elif is_flowchart_query:
+                    print("   🔄 Flowchart query - prioritizing PDF flowchart")
+                    for doc in self.documents:
+                        file_name_lower = doc.get('file_name', '').lower()
+                        if 'customs tarriff & hs code' in file_name_lower and '.pdf' in file_name_lower:
+                            doc_copy = dict(doc)
+                            doc_copy['similarity_score'] = 0.99
+                            doc_copy['match_type'] = 'flowchart_tariff'
+                            forced_results.append(doc_copy)
+                            print(f"   ✅ FLOWCHART: {doc.get('file_name', '')} (Visual)")
+                            break
+            
+            # 7. GENERAL PROBLEMS/ISSUES QUERIES - Always prioritize comprehensive Q&A document
+            elif any(keyword in query_lower for keyword in ['problem', 'issue', 'challenge', 'difficulty', 'trouble']):
+                print("🎯 Detected PROBLEMS/ISSUES query")
                 for doc in self.documents:
                     file_name_lower = doc.get('file_name', '').lower()
-                    # Look for the specific customs tariff PDF with flowcharts
-                    if 'customs tarriff & hs code' in file_name_lower and '.pdf' in file_name_lower:
+                    if 'problems in import and export' in file_name_lower and '.docx' in file_name_lower:
                         doc_copy = dict(doc)
                         doc_copy['similarity_score'] = 0.99
-                        doc_copy['match_type'] = 'forced_customs_tariff'
+                        doc_copy['match_type'] = 'comprehensive_problems'
                         forced_results.append(doc_copy)
-                        print(f"   ✅ FORCED MATCH: {doc.get('file_name', '')} (PDF with images)")
+                        print(f"   ✅ COMPREHENSIVE GUIDE: {doc.get('file_name', '')} (Q&A)")
                         break
-                    # Backup: also look for other customs tariff content
-                    elif 'customs tariff' in file_name_lower or 'customs tarriff' in file_name_lower:
+            
+            # 8. GENERAL FLOWCHART HANDLER - For queries like "show flowchart", "display diagram"
+            elif any(keyword in query_lower for keyword in ['show', 'display', 'flowchart', 'flow chart', 'diagram']) and not forced_results:
+                print("🎯 Detected GENERAL FLOWCHART/VISUAL query")
+                # Look for any flowchart documents and prioritize by topic relevance
+                flowchart_docs = []
+                for doc in self.documents:
+                    file_name_lower = doc.get('file_name', '').lower()
+                    if 'flowchart' in file_name_lower:
                         doc_copy = dict(doc)
-                        doc_copy['similarity_score'] = 0.95
-                        doc_copy['match_type'] = 'forced_customs_backup'
-                        forced_results.append(doc_copy)
-                        print(f"   ✅ BACKUP MATCH: {doc.get('file_name', '')}")
+                        doc_copy['similarity_score'] = 0.90
+                        doc_copy['match_type'] = 'general_flowchart'
+                        flowchart_docs.append(doc_copy)
+                        print(f"   📊 AVAILABLE FLOWCHART: {doc.get('file_name', '')}")
+                
+                if flowchart_docs:
+                    # Return the first available flowchart (can be enhanced with better logic later)
+                    forced_results.append(flowchart_docs[0])
+                    print(f"   ✅ GENERAL FLOWCHART: {flowchart_docs[0].get('file_name', '')}")
             
             # If we found forced results, return them immediately
             if forced_results:
-                print(f"🎯 FORCED MATCH SUCCESS: Returning {len(forced_results)} documents")
+                print(f"🎯 SMART ROUTING SUCCESS: Returning {len(forced_results)} optimally selected documents")
                 return forced_results[:top_k]
 
             # Extract key terms from questions for better search
@@ -369,9 +550,39 @@ class SimpleRetriever:
                     seen.add(doc_id)
                     unique_results.append(doc)
             
-            # Sort by similarity score and return top results
-            unique_results.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
-            return unique_results[:top_k]
+            # Apply OCR quality filtering
+            print(f"🔍 Applying OCR quality filtering to {len(unique_results)} results...")
+            filtered_results = []
+            
+            for doc in unique_results:
+                content = doc.get('content', '')
+                quality_assessment = assess_ocr_quality(content)
+                
+                # Add quality metrics to document
+                doc['ocr_quality'] = quality_assessment
+                
+                # Filter out heavily corrupted content for definition queries
+                is_definition_query = any(def_word in query.lower() for def_word in [
+                    'what is', 'definition', 'explain', 'meaning', 'define', 'about'
+                ])
+                
+                if is_definition_query and quality_assessment['corruption_ratio'] > 0.4:
+                    print(f"   ❌ FILTERED OUT: {doc['file_name']} (corruption: {quality_assessment['corruption_ratio']:.2f})")
+                    continue
+                elif quality_assessment['corruption_ratio'] > 0.6:  # Very corrupted for any query
+                    print(f"   ❌ FILTERED OUT: {doc['file_name']} (severe corruption: {quality_assessment['corruption_ratio']:.2f})")
+                    continue
+                else:
+                    # Adjust similarity score based on quality
+                    quality_bonus = quality_assessment['readability_score'] * 0.1
+                    doc['similarity_score'] = doc.get('similarity_score', 0) + quality_bonus
+                    print(f"   ✅ KEPT: {doc['file_name']} (corruption: {quality_assessment['corruption_ratio']:.2f}, readability: {quality_assessment['readability_score']:.2f})")
+                    filtered_results.append(doc)
+            
+            # Sort by adjusted similarity score and return top results
+            filtered_results.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
+            print(f"🔍 OCR Filtering: {len(unique_results)} → {len(filtered_results)} documents")
+            return filtered_results[:top_k]
             
         except Exception as e:
             print(f"Error in retrieval: {e}")

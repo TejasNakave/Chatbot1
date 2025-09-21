@@ -3,6 +3,7 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from typing import Optional
 from datetime import datetime
+import re
 
 
 class GeminiAPIWrapper:
@@ -37,6 +38,82 @@ class GeminiAPIWrapper:
         
         print("Gemini API wrapper initialized successfully!")
     
+    def _normalize_image_paths(self, text: str) -> str:
+        """
+        Normalize image paths to use forward slashes for cross-platform compatibility.
+        
+        Args:
+            text (str): Text containing image references
+            
+        Returns:
+            str: Text with normalized image paths
+        """
+        def normalize_path_in_match(match):
+            full_match = match.group(0)
+            # Extract the path part after ': '
+            path_start = full_match.find(': ') + 2
+            path_end = full_match.rfind(']')
+            
+            if path_start < path_end:
+                original_path = full_match[path_start:path_end]
+                # Normalize the path - replace backslashes with forward slashes
+                normalized_path = original_path.replace('\\', '/')
+                # Reconstruct the full image reference
+                return full_match[:path_start] + normalized_path + full_match[path_end:]
+            
+            return full_match
+        
+        # Find and normalize all image references
+        normalized_text = re.sub(r'\[IMAGE_\d+: [^\]]+\]', normalize_path_in_match, text)
+        return normalized_text
+    
+    def _fix_image_paths_for_deployment(self, text: str) -> str:
+        """
+        Fix image paths for deployment environment (Linux compatibility).
+        
+        Args:
+            text (str): Text containing image references
+            
+        Returns:
+            str: Text with fixed image paths
+        """
+        def fix_path_in_match(match):
+            full_match = match.group(0)
+            # Extract the path part after ': '
+            path_start = full_match.find(': ') + 2
+            path_end = full_match.rfind(']')
+            
+            if path_start < path_end:
+                original_path = full_match[path_start:path_end]
+                
+                # Convert to forward slashes for Linux compatibility
+                fixed_path = original_path.replace('\\', '/')
+                
+                # Ensure the path is relative and doesn't start with drive letters (Windows)
+                if ':' in fixed_path and len(fixed_path) > 1 and fixed_path[1] == ':':
+                    # Remove Windows drive letter (e.g., "C:/Users/..." -> "cache/...")
+                    parts = fixed_path.split('/')
+                    # Find the cache directory and keep everything from there
+                    if 'cache' in parts:
+                        cache_index = parts.index('cache')
+                        fixed_path = '/'.join(parts[cache_index:])
+                
+                # Ensure path uses forward slashes and is relative
+                fixed_path = fixed_path.replace('\\', '/')
+                
+                # Remove leading slash if present to make it relative
+                if fixed_path.startswith('/'):
+                    fixed_path = fixed_path.lstrip('/')
+                
+                # Reconstruct the full image reference
+                return full_match[:path_start] + fixed_path + full_match[path_end:]
+            
+            return full_match
+        
+        # Find and fix all image references
+        fixed_text = re.sub(r'\[IMAGE_\d+: [^\]]+\]', fix_path_in_match, text)
+        return fixed_text
+    
     def _filter_images_for_query(self, context: str, question: str) -> str:
         """
         Filter image references in context based on query type.
@@ -54,9 +131,16 @@ class GeminiAPIWrapper:
         is_coffee_query = 'coffee' in question_lower and 'svb' not in question_lower
         is_svb_query = 'svb' in question_lower and 'coffee' not in question_lower
         
-        # Only filter if it's a specific coffee or SVB query
+        # Only filter for very specific coffee or SVB queries - don't interfere with general queries
         if not (is_coffee_query or is_svb_query):
-            return context
+            return context  # Don't filter for general queries like DGFT
+            
+        # Additional check: only filter if it's explicitly asking for flowcharts/images
+        visual_terms = ['flowchart', 'flow chart', 'show', 'display', 'diagram', 'image']
+        has_visual_request = any(term in question_lower for term in visual_terms)
+        
+        if not has_visual_request:
+            return context  # Don't filter if not asking for visual content
             
         print(f"🔍 FILTERING IMAGES: coffee_query={is_coffee_query}, svb_query={is_svb_query}")
         print(f"🔍 Found {len(image_refs)} images to filter:")
@@ -94,10 +178,16 @@ class GeminiAPIWrapper:
         if filtered_refs:
             # Remove all image references first
             filtered_context = re.sub(r'\[IMAGE_\d+: [^\]]+\]', '', context)
-            # Add back only the relevant ones
-            image_section = f"\n\nRelevant images for {question_lower}:\n" + "\n".join(filtered_refs)
+            # Add back only the relevant ones with normalized paths
+            normalized_refs = []
+            for ref in filtered_refs:
+                normalized_ref = self._normalize_image_paths(ref)
+                normalized_ref = self._fix_image_paths_for_deployment(normalized_ref)
+                normalized_refs.append(normalized_ref)
+            
+            image_section = f"\n\nRelevant images for {question_lower}:\n" + "\n".join(normalized_refs)
             filtered_context += image_section
-            print(f"🔍 FILTERED RESULT: Keeping {len(filtered_refs)} relevant images")
+            print(f"🔍 FILTERED RESULT: Keeping {len(filtered_refs)} relevant images (paths normalized)")
             return filtered_context
         else:
             print(f"🔍 FILTERED RESULT: No relevant images found, removing all")
@@ -286,19 +376,25 @@ CRITICAL IMAGE HANDLING:
         try:
             response = self.model.generate_content(contextual_prompt)
             if response.text:
+                contextual_response = response.text
+                
+                # **FIX FOR LINUX DEPLOYMENT**: Normalize image paths
+                contextual_response = self._normalize_image_paths(contextual_response)
+                contextual_response = self._fix_image_paths_for_deployment(contextual_response)
+                
                 print(f"🤖 DEBUG: Contextual AI Response:")
-                print(f"  Response length: {len(response.text)} chars")
+                print(f"  Response length: {len(contextual_response)} chars")
                 # Check for image references in the response
                 import re
-                image_refs = re.findall(r'\[IMAGE_\d+: [^\]]+\]', response.text)
+                image_refs = re.findall(r'\[IMAGE_\d+: [^\]]+\]', contextual_response)
                 if image_refs:
-                    print(f"  ✅ Response contains image references")
+                    print(f"  ✅ Response contains image references (paths normalized)")
                     for ref in image_refs:
                         print(f"    - {ref}")
                 else:
                     print(f"  ❌ No image references in response")
                 
-                return response.text
+                return contextual_response
             else:
                 return "I couldn't generate a proper response to your contextual question."
                 
@@ -332,7 +428,11 @@ CRITICAL IMAGE HANDLING:
             conversation_context = "Recent conversation context:\n"
             for entry in recent_history:
                 conversation_context += f"User: {entry.get('question', '')}\n"
-                conversation_context += f"Assistant: {entry.get('answer', '')}\n\n"
+                answer = entry.get('answer', '')
+                # Normalize paths in historical answers
+                answer = self._normalize_image_paths(answer)
+                answer = self._fix_image_paths_for_deployment(answer)
+                conversation_context += f"Assistant: {answer}\n\n"
             conversation_context += "Current question follows:\n\n"
         
         # Check if this is a contextual query (no documents returned by retriever)
@@ -375,6 +475,10 @@ CRITICAL IMAGE HANDLING:
                 # Filter images based on query type (especially for coffee queries)
                 context = self._filter_images_for_query(context, question)
                 
+                # **FIX FOR LINUX DEPLOYMENT**: Normalize all paths in context before sending to AI
+                context = self._normalize_image_paths(context)
+                context = self._fix_image_paths_for_deployment(context)
+                
                 # Limit context length to avoid token limits
                 if len(context) > 12000:  # Increased limit for longer responses
                     context = context[:12000] + "...\n[Content truncated due to length]"
@@ -383,45 +487,61 @@ CRITICAL IMAGE HANDLING:
                 current_date = datetime.now().strftime("%A, %B %d, %Y")
                 current_time = datetime.now().strftime("%I:%M %p")
                 
-                document_prompt = f"""Current Date: {current_date}
+                # Check if this is a flowchart query
+                is_flowchart_query = any(word in question.lower() for word in [
+                    'flowchart', 'flow chart', 'show', 'display', 'diagram', 'process', 'steps', 'procedure'
+                ])
+                
+                if is_flowchart_query:
+                    document_prompt = f"""Current Date: {current_date}
 Current Time: {current_time}
 
-You are a trade assistant chatbot that provides information from PDF documents.
+You are a trade assistant chatbot specializing in displaying flowcharts and process diagrams.
 
 {conversation_context}Document Content:
 {context}
 
 Question: {question}
 
-RESPONSE RULES:
+FLOWCHART QUERY RESPONSE RULES:
 
-1. FOR DEFINITION/CERTIFICATE QUERIES (What is MSME, CIN, STAR certificate, etc.):
-   - Return the EXACT text from the PDF document as-is
-   - Only make minimal formatting improvements:
-     * Replace 'l' with '•' for bullet points
-     * Fix obvious spacing issues (multiple spaces to single space)
-     * Fix broken words that are clearly OCR errors
-   - Do NOT rewrite, paraphrase, or restructure the content
-   - Keep the original wording and structure from the PDF
+1. THIS IS A FLOWCHART/VISUAL REQUEST:
+   - PRIORITY: Show the flowchart image if available
+   - If you see [IMAGE_X: path] references, ALWAYS include them EXACTLY as shown
+   - Provide a brief explanation of the flowchart process
+   - DO NOT include corrupted OCR text from scanned documents
+   - Focus on the visual representation over corrupted text
 
-2. FOR OTHER GENERAL QUERIES:
-   - Rewrite document content into clear, flowing explanations
-   - Transform bullet points and fragmented text into coherent sentences
-   - Provide comprehensive narrative descriptions
+2. RESPONSE FORMAT:
+   - Start with: "Here is the [Process Name] flowchart:"
+   - Include ALL [IMAGE_X: path] references EXACTLY as they appear
+   - Add a brief, clean explanation of the process steps
+   - Ignore any garbled/corrupted OCR text in the context
 
-3. GLOBAL SEARCH CRITERIA:
-   - If document only mentions the term but doesn't define/explain it
-   - If document contains table of contents/references but not actual content
-   - If topic is completely unrelated to document content
-   - If no relevant answer found, respond ONLY with: "GLOBAL_SEARCH_NEEDED"
+3. IMAGE HANDLING:
+   - Copy image references EXACTLY: [IMAGE_0: cache/filename.png]
+   - Multiple images should all be included
+   - Images are the primary content for flowchart queries
 
-IMAGE HANDLING:
-- If you see "[IMAGE_X: path]" references, include them EXACTLY in your answer
-- Only include images relevant to the specific query
+CRITICAL: For flowchart queries, prioritize images over text. Ignore corrupted OCR content like "sft Z", "aytion k de deve", etc.
 
-CRITICAL: For definition questions, preserve the original PDF text. Only clean up obvious formatting errors, don't rewrite the content.
+Answer with the flowchart image(s) and clean process explanation:"""
+                else:
+                    document_prompt = f"""You are a helpful trade assistant. Answer the question using the provided document content.
 
-Answer:"""
+{conversation_context}Document Content:
+{context}
+
+Question: {question}
+
+Instructions:
+1. Provide a comprehensive, detailed answer based on the document content
+2. If the document content fully answers the question, provide a complete response
+3. Include relevant details, definitions, and explanations from the documents
+4. If you see [IMAGE_X: path] references, include them in your response
+5. Only respond with "GLOBAL_SEARCH_NEEDED" if the documents contain no relevant information at all
+
+Provide a detailed, informative answer:"""
 
                 try:
                     # Debug: Print what we're sending to AI
@@ -441,6 +561,18 @@ Answer:"""
                     response = self.model.generate_content(document_prompt)
                     if response.text and response.text.strip():
                         doc_answer = response.text.strip()
+                        
+                        # **FIX FOR LINUX DEPLOYMENT**: Normalize image paths for cross-platform compatibility
+                        doc_answer = self._normalize_image_paths(doc_answer)
+                        doc_answer = self._fix_image_paths_for_deployment(doc_answer)
+                        
+                        # Debug: Print path normalization
+                        if "[IMAGE_" in doc_answer:
+                            print(f"🔧 PATH NORMALIZATION: Fixed image paths for cross-platform compatibility")
+                            import re
+                            image_refs = re.findall(r'\[IMAGE_\d+: [^\]]+\]', doc_answer)
+                            for ref in image_refs:
+                                print(f"    - {ref}")
                         
                         # Check if this is an image request and AI said GLOBAL_SEARCH_NEEDED
                         # but we actually have images - force include them ONLY if topic is relevant
@@ -475,8 +607,12 @@ Answer:"""
                                 import re
                                 image_refs = re.findall(r'\[IMAGE_\d+: [^\]]+\]', context)
                                 if image_refs:
-                                    doc_answer = f"Here are the requested images:\n\n" + "\n".join(image_refs)
-                                    print(f"🔧 FORCED IMAGE RESPONSE: {len(image_refs)} images included")
+                                    # Normalize paths in forced image response
+                                    forced_response = f"Here are the requested images:\n\n" + "\n".join(image_refs)
+                                    forced_response = self._normalize_image_paths(forced_response)
+                                    forced_response = self._fix_image_paths_for_deployment(forced_response)
+                                    doc_answer = forced_response
+                                    print(f"🔧 FORCED IMAGE RESPONSE: {len(image_refs)} images included (paths normalized)")
                             else:
                                 print(f"🚫 TOPIC MISMATCH: Not forcing images for unrelated query: {question}")
                         # Debug: Print what AI responded

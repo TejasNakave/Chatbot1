@@ -9,3 +9,5 @@ numpy
 faiss-cpu
 razorpay
 stripe
+pymupdf
+pytesseract

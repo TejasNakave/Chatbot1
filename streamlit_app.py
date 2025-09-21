@@ -8,6 +8,86 @@ from gemini_wrapper import GeminiAPIWrapper
 from retriever import SimpleRetriever
 
 
+def get_suggested_questions():
+    """Generate contextual suggested questions based on document content"""
+    suggestions = [
+        "💼 What is DGFT and what services do they provide?",
+        "📋 How do I apply for an Import Export Code (IEC)?", 
+        "🎯 What are the latest export incentive schemes?",
+        "💰 How do duty drawbacks work in international trade?",
+        "📊 What documents are required for export transactions?",
+        "🌏 What are the current trade policies with major countries?",
+        "🔍 How can I check the status of my trade license?",
+        "📈 What are the benefits of SEZ (Special Economic Zone)?",
+        "⚖️ What are the compliance requirements for exporters?",
+        "🚢 How do I calculate shipping and logistics costs?"
+    ]
+    return suggestions
+
+def generate_follow_up_questions(user_question, ai_response):
+    """Generate contextual follow-up questions - DISABLED"""
+    # Follow-up questions disabled to prevent interface issues
+    return []
+
+def generate_simple_followups(user_question, ai_response):
+    """Simple fallback for follow-up generation when AI method fails"""
+    combined_text = (user_question + " " + ai_response).lower()
+    
+    # Simple context-based follow-ups
+    if 'dgft' in combined_text:
+        return ["How to contact DGFT for this matter?", "What are the DGFT fees involved?", "How long does DGFT processing take?"]
+    elif 'iec' in combined_text:
+        return ["What documents are needed for this IEC process?", "How much does this IEC service cost?", "Can this be done online?"]
+    elif 'export' in combined_text:
+        return ["What are the export documentation requirements?", "How to handle export compliance?", "What export incentives are available?"]
+    elif 'duty' in combined_text or 'drawback' in combined_text:
+        return ["How is the duty/drawback calculated?", "What documents are required for claims?", "What are the time limits?"]
+    else:
+        return ["Can you explain this process step by step?", "What are the associated costs?", "How long does this typically take?"]
+
+def display_suggested_questions():
+    """Display suggested questions as clickable buttons"""
+    st.markdown("### 💡 **Suggested Questions:**")
+    
+    suggestions = get_suggested_questions()
+    
+    # Display in a nice grid layout
+    cols = st.columns(2)
+    
+    for i, suggestion in enumerate(suggestions[:8]):  # Show 8 suggestions
+        col = cols[i % 2]
+        with col:
+            if st.button(suggestion, key=f"suggestion_{i}", use_container_width=True):
+                # When clicked, simulate user input
+                st.session_state.suggested_question = suggestion.split(' ', 1)[1] if ' ' in suggestion else suggestion
+                st.rerun()
+
+def display_follow_up_questions(questions, conversation_id):
+    """Display follow-up questions - DISABLED for now"""
+    # Follow-up questions disabled to prevent issues
+    pass
+
+def get_proactive_response_intro(user_question):
+    """Generate a proactive intro to responses"""
+    intros = [
+        "Great question! Let me help you with that.",
+        "I'd be happy to explain this for you.",
+        "That's an important topic in international trade. Here's what you need to know:",
+        "Excellent question! Based on the available information:",
+        "Let me break this down for you:"
+    ]
+    
+    # Choose intro based on question type
+    if "?" in user_question:
+        return intros[0]
+    elif any(word in user_question.lower() for word in ['how', 'what', 'when', 'where', 'why']):
+        return intros[1]
+    elif any(word in user_question.lower() for word in ['help', 'assist', 'guide']):
+        return intros[2]
+    else:
+        return intros[3]
+
+
 def get_data_dir_hash():
     """Generate a hash based on files in data directory to detect changes."""
     import hashlib
@@ -40,7 +120,6 @@ def load_documents(data_dir_hash):
             return []
         
         documents = load_documents_from_folder(data_dir)
-        st.success(f"✅ Loaded {len(documents)} documents successfully (Hash: {data_dir_hash})")
         return documents
     except Exception as e:
         st.error(f"Error loading documents: {str(e)}")
@@ -234,13 +313,130 @@ def main():
     st.set_page_config(
         page_title="Trade Assistant",
         page_icon="🤖",
-        layout="centered",
+        layout="wide",
         initial_sidebar_state="collapsed"
     )
     
     # Custom CSS and JS for better styling and image protection
     st.markdown('''
     <style>
+    /* Remove top spacing and padding */
+    .main .block-container {
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+        margin-top: 0rem !important;
+    }
+    
+    .stApp > div:first-child {
+        padding-top: 0rem !important;
+        margin-top: 0rem !important;
+    }
+    
+    .stApp {
+        margin-top: 0px !important;
+        padding-top: 0px !important;
+    }
+    
+    [data-testid="stAppViewContainer"] {
+        padding-top: 0rem !important;
+        margin-top: 0rem !important;
+    }
+    
+    /* Remove spacing from info elements */
+    .stAlert {
+        margin-top: 0rem !important;
+        margin-bottom: 0rem !important;
+    }
+    
+    [data-testid="stAlert"] {
+        margin-top: 0rem !important;
+        margin-bottom: 0rem !important;
+        padding-top: 0.5rem !important;
+        padding-bottom: 0.5rem !important;
+    }
+    
+    /* Remove spacing from containers */
+    .element-container {
+        margin-top: 0rem !important;
+        margin-bottom: 0rem !important;
+    }
+    
+    /* Hide Deploy button and menu dots */
+    .stDeployButton {
+        display: none !important;
+    }
+    
+    [data-testid="stToolbar"] {
+        display: none !important;
+    }
+    
+    .stAppDeployButton {
+        display: none !important;
+    }
+    
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+    
+    /* Hide the entire header toolbar */
+    .stAppHeader {
+        display: none !important;
+    }
+    
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
+    
+    /* Remove all default chat message styling first */
+    [data-testid="stChatMessage"] {
+        background: transparent !important;
+        border: none !important;
+        padding: 0.5rem 0 !important;
+        margin: 0.2rem 0 !important;
+    }
+    
+    /* Style user questions (odd numbered messages) with box and bold text */
+    [data-testid="stChatMessage"]:nth-child(odd) {
+        border: 1px solid #ddd !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
+        margin: 0.5rem 0 !important;
+        background: #f9f9f9 !important;
+    }
+    
+    /* Make user question text bold */
+    [data-testid="stChatMessage"]:nth-child(odd) p {
+        font-weight: bold !important;
+        color: #333 !important;
+    }
+    
+    /* Ensure AI responses stay normal */
+    [data-testid="stChatMessage"]:nth-child(even) {
+        background: transparent !important;
+        border: none !important;
+        padding: 0.5rem 0 !important;
+        margin: 0.2rem 0 !important;
+    }
+    
+    [data-testid="stChatMessage"]:nth-child(even) p {
+        font-weight: normal !important;
+    }
+    
+    /* Hide empty chat messages completely */
+    [data-testid="stChatMessage"]:empty {
+        display: none !important;
+    }
+    
+    /* Remove chat message avatars/icons */
+    [data-testid="stChatMessage"] > div:first-child {
+        display: none !important;
+    }
+    
+    /* Style chat message content */
+    [data-testid="stChatMessage"] > div {
+        padding: 0 !important;
+    }
+    
     .metric-container {
         background: #f0f2f6;
         padding: 1rem;
@@ -254,6 +450,20 @@ def main():
         -webkit-user-select: none;
         user-select: none;
         pointer-events: auto;
+    }
+    
+    /* Custom chat input styling */
+    .stChatInput input {
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+        border-radius: 25px !important;
+        border: 2px solid #e0e0e0 !important;
+        transition: border-color 0.3s ease !important;
+    }
+    
+    .stChatInput input:focus {
+        border-color: #4CAF50 !important;
+        box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2) !important;
     }
     </style>
     <script>
@@ -314,47 +524,78 @@ def main():
     # Additional CSS for chat styling
     st.markdown("""
     <style>
-    /* Increase chat message text size - clean version */
+    /* Set Inter font for entire app with 14px base size */
+    .stApp, .stApp * {
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+    }
+    
+    /* Chat message styling with Inter font */
     .stChatMessage {
-        font-size: 1.3rem !important;
-        line-height: 1.7 !important;
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
     }
     
     .stChatMessage p {
-        font-size: 1.3rem !important;
-        line-height: 1.7 !important;
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
         margin-bottom: 0.8rem !important;
     }
     
     .stChatMessage ul, .stChatMessage ol {
-        font-size: 1.3rem !important;
-        line-height: 1.7 !important;
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
     }
     
     .stChatMessage li {
-        font-size: 1.3rem !important;
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
         margin-bottom: 0.6rem !important;
     }
     
-    /* Increase chat input text size */
+    /* Chat input styling */
     .stChatInput > div > div > input {
-        font-size: 1.2rem !important;
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
         padding: 0.8rem !important;
     }
     
-    /* Make chat messages more readable */
+    /* All chat message containers */
     [data-testid="stChatMessage"] {
-        font-size: 1.3rem !important;
-        line-height: 1.7 !important;
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
         padding: 1rem !important;
         margin-bottom: 1rem !important;
     }
     
     [data-testid="stChatMessage"] p, 
     [data-testid="stChatMessage"] div {
-        font-size: 1.3rem !important;
-        line-height: 1.7 !important;
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
     }
+    
+    /* Headers and other text elements */
+    h1, h2, h3, h4, h5, h6 {
+        font-family: "Inter", sans-serif !important;
+    }
+    
+    /* Buttons and UI elements */
+    .stButton button {
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+    }
+    
+    /* Sidebar elements */
+    .sidebar .element-container {
+        font-family: "Inter", sans-serif !important;
+        font-size: 14px !important;
+    }
+    
     .chat-container {
         max-height: 500px;
         overflow-y: auto;
@@ -362,12 +603,14 @@ def main():
         border-radius: 8px;
         padding: 1rem;
         background: #fafafa;
+        font-family: "Inter", sans-serif !important;
     }
     .sidebar-section {
         background: #f8f9fa;
         padding: 1rem;
         border-radius: 8px;
         margin-bottom: 1rem;
+        font-family: "Inter", sans-serif !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -407,8 +650,20 @@ def main():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
     
+    if 'show_suggestions' not in st.session_state:
+        st.session_state.show_suggestions = True
+    
+    if 'conversation_context' not in st.session_state:
+        st.session_state.conversation_context = []
+    
+    if 'last_followup_id' not in st.session_state:
+        st.session_state.last_followup_id = None
+    
+    if 'shown_followups' not in st.session_state:
+        st.session_state.shown_followups = set()  # Track shown questions to avoid repetition
+    
     # Set default values for removed sidebar controls
-    max_docs = 3  # Default number of relevant documents
+    max_docs = 5  # Increase from 3 to 5 for better coverage
     show_sources = False  # Default to not showing sources
     
     if 'initialized' not in st.session_state:
@@ -423,14 +678,23 @@ def main():
             st.session_state.initialized = True
     
     # Main chat interface with improved layout
-    st.subheader("💬 Chat Interface")
+    
+    # Add informational note about search capabilities
+    st.markdown("""
+    <div style="background-color: #e7f3ff; border: 1px solid #bee5eb; border-radius: 0.25rem; padding: 0.5rem; margin-bottom: 0.75rem; font-family: 'Inter', sans-serif !important; font-size: 12px;">
+        <span style="font-family: 'Inter', sans-serif !important; font-size: 8ppx;">ⓘ <strong>Suggested Keywords:</strong> Try using terms like: DGFT, IEC, Export License, Import Policy, Duty Drawback, SEZ, Trade Documentation, Customs, EXIM Policy, Foreign Trade</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    
+    # Simplified approach - no follow-up questions for now
+    user_question = st.chat_input("Type your query...")
     
     # Display chat history with enhanced styling
     chat_container = st.container()
     with chat_container:
         if st.session_state.chat_history:
-            st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-            for entry in st.session_state.chat_history:
+            for i, entry in enumerate(st.session_state.chat_history):
                 format_chat_message("user", entry["question"], entry["timestamp"])
                 
                 if show_sources and entry.get("sources"):
@@ -441,12 +705,6 @@ def main():
                 
                 format_chat_message("assistant", entry["answer"], entry["timestamp"])
                 st.divider()
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("👋 Welcome! Ask me anything about your documents.")
-    
-    # Chat input
-    user_question = st.chat_input("Ask a question about your documents...")
     
     if user_question:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -454,7 +712,17 @@ def main():
         # Add user question to history immediately
         format_chat_message("user", user_question, timestamp)
         
-        with st.spinner("🔍 Searching documents and generating answer..."):
+        # Add proactive intro
+        intro = get_proactive_response_intro(user_question)
+        
+        with st.spinner("🤖 Thinking... Analyzing your question and searching through documents..."):
+            # Show thinking process
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            status_text.text("🔍 Understanding your question...")
+            progress_bar.progress(25)
+            
             try:
                 # For competency/capability questions, use more documents to get complete info
                 search_terms = user_question.lower()
@@ -465,6 +733,9 @@ def main():
                     retrieval_count = max_docs
                 
                 # Retrieve relevant documents
+                status_text.text("📚 Searching through documents...")
+                progress_bar.progress(50)
+                
                 relevant_docs = st.session_state.retriever.retrieve_relevant_chunks(
                     user_question, top_k=retrieval_count
                 )
@@ -501,20 +772,33 @@ def main():
                         for doc in relevant_docs:
                             st.write(f"- **{doc['file_name']}** (relevance: {doc['similarity_score']:.3f})")
                 
-                # Generate answer
-                answer = st.session_state.gemini.chat_with_context(
+                # Generate answer with proactive intro
+                status_text.text("🧠 Generating comprehensive answer...")
+                progress_bar.progress(75)
+                
+                ai_response = st.session_state.gemini.chat_with_context(
                     user_question, 
                     relevant_docs, 
                     st.session_state.chat_history
                 )
                 
+                # Combine intro with AI response
+                enhanced_answer = f"{intro}\n\n{ai_response}"
+                
+                status_text.text("✅ Response ready!")
+                progress_bar.progress(100)
+                
+                # Clear progress indicators
+                progress_bar.empty()
+                status_text.empty()
+                
                 # Display answer
-                format_chat_message("assistant", answer, timestamp)
+                format_chat_message("assistant", enhanced_answer, timestamp)
                 
                 # Save to session state
                 st.session_state.chat_history.append({
                     "question": user_question,
-                    "answer": answer,
+                    "answer": enhanced_answer,
                     "sources": relevant_docs,
                     "timestamp": timestamp
                 })
