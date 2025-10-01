@@ -34,7 +34,7 @@ class GeminiAPIWrapper:
             max_output_tokens=2048,  # Increased from default
             temperature=0.7,
         )
-        self.model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
+        self.model = genai.GenerativeModel('gemini-2.5-flash', generation_config=generation_config)
         
         print("Gemini API wrapper initialized successfully!")
     
